@@ -2,7 +2,7 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LabelList, Cell } from 'recharts';
 import {
   Bell, FileText, MessageSquare, LayoutGrid, Plus, X, ChevronDown, Pencil,
-  CheckCircle2, XCircle, ArrowUpCircle, UploadCloud, Send, Sparkles, Loader2, BarChart3, History, Users, IdCard, DoorOpen, Building2, Download, AlertTriangle, Info
+  CheckCircle2, XCircle, ArrowUpCircle, UploadCloud, Send, Sparkles, Loader2, BarChart3, History, Users, IdCard, DoorOpen, Building2, Download, AlertTriangle, Info, Search
 } from 'lucide-react';
 import {
   createAgenda,
@@ -2241,10 +2241,20 @@ function SelectorProfesionalesMapa({ opciones, horasPorKey, seleccion, setSelecc
 function GraficoHorasPorPrestacion({ datos, seleccion, setSeleccion }) {
   const [orden, setOrden] = useState('horas');
   const [mostrar, setMostrar] = useState('top10'); // 'top10' | 'todas'
-  const recortado = mostrar === 'top10' && datos.length > 10;
+  const [busqueda, setBusqueda] = useState('');
+  // La búsqueda ignora mayúsculas y tildes, y busca cada palabra por separado ("consulta control").
+  const encontrados = useMemo(() => {
+    const palabras = claveActividad(busqueda).split(' ').filter(Boolean);
+    if (!palabras.length) return datos;
+    return datos.filter((d) => {
+      const texto = claveActividad(`${d.actividad} ${Object.keys(d.procesos || {}).join(' ')}`);
+      return palabras.every((p) => texto.includes(p));
+    });
+  }, [datos, busqueda]);
+  const recortado = mostrar === 'top10' && encontrados.length > 10;
   const ordenados = useMemo(() => {
     // Top 10 siempre son las 10 con más horas; después se aplica el orden elegido sobre ellas.
-    const base = mostrar === 'top10' ? [...datos].sort((a, b) => b.horas - a.horas).slice(0, 10) : datos;
+    const base = mostrar === 'top10' ? [...encontrados].sort((a, b) => b.horas - a.horas).slice(0, 10) : encontrados;
     const copia = [...base];
     if (orden === 'nombre') {
       copia.sort((a, b) => (a.actividad || '').localeCompare(b.actividad || '', 'es', { sensitivity: 'base' }) || (a.proceso || '').localeCompare(b.proceso || ''));
@@ -2252,8 +2262,14 @@ function GraficoHorasPorPrestacion({ datos, seleccion, setSeleccion }) {
       copia.sort((a, b) => b.horas - a.horas);
     }
     return copia;
-  }, [datos, orden, mostrar]);
+  }, [encontrados, orden, mostrar]);
   const total = datos.reduce((s, d) => s + d.horas, 0);
+  const totalEncontrados = encontrados.reduce((s, d) => s + d.horas, 0);
+  const hayBusqueda = busqueda.trim().length > 0;
+  const seleccionarEncontrados = () => setSeleccion((prev) => {
+    const ya = new Set(prev.map((s) => s.clave));
+    return [...prev, ...encontrados.filter((d) => !ya.has(d.clave)).map((d) => ({ clave: d.clave, proceso: Object.keys(d.procesos || {}).join(' + ') || d.proceso, actividad: d.actividad }))];
+  });
   const estaSeleccionada = (e) => seleccion.some((s) => s.clave === e.clave);
   // Suma sobre todas las prestaciones (no solo las visibles en el top 10).
   const horasSeleccion = datos.filter(estaSeleccionada).reduce((s, d) => s + d.horas, 0);
@@ -2270,7 +2286,7 @@ function GraficoHorasPorPrestacion({ datos, seleccion, setSeleccion }) {
           <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Horas por prestación</div>
           <span className="text-[10px] font-semibold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded-full">{datos.length}</span>
           <span className="text-[10px] text-slate-400">
-            {formatoHoras(total)} en total{recortado ? ` · mostrando las 10 con más horas de ${datos.length}` : ''}
+            {formatoHoras(total)} en total{recortado ? ` · mostrando las 10 con más horas de ${encontrados.length}` : ''}
           </span>
         </div>
         <div className="flex items-center gap-1.5 flex-wrap">
@@ -2300,6 +2316,35 @@ function GraficoHorasPorPrestacion({ datos, seleccion, setSeleccion }) {
           </div>
         </div>
       </div>
+      <div className="flex items-center gap-2 mb-2 flex-wrap">
+        <div className="relative w-full sm:w-72">
+          <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input
+            value={busqueda}
+            onChange={(e) => setBusqueda(e.target.value)}
+            placeholder="Buscar prestación..."
+            className="w-full text-xs rounded-lg border border-slate-300 pl-7 pr-7 py-1.5 bg-white focus:outline-none focus:border-[#4C7C74]"
+          />
+          {hayBusqueda && (
+            <button onClick={() => setBusqueda('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700" title="Limpiar búsqueda">
+              <X size={12} />
+            </button>
+          )}
+        </div>
+        {hayBusqueda && (
+          <>
+            <span className="text-[11px] text-slate-500">
+              {encontrados.length} de {datos.length} prestaciones · <b className="text-slate-700">{formatoHoras(totalEncontrados)}</b>
+              {total > 0 ? ` (${Math.round((totalEncontrados / total) * 100)}% del total)` : ''}
+            </span>
+            {encontrados.length > 0 && (
+              <button onClick={seleccionarEncontrados} className="text-[11px] font-medium text-[#4C7C74] hover:underline">
+                Ver estas en la distribución horaria
+              </button>
+            )}
+          </>
+        )}
+      </div>
       <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
         <div className="flex flex-wrap gap-3">
           {PROCESOS_CAT.map((p) => (
@@ -2324,6 +2369,11 @@ function GraficoHorasPorPrestacion({ datos, seleccion, setSeleccion }) {
           <div className="text-[10px] text-slate-400">Haz clic en una o varias barras para verlas en la distribución horaria</div>
         )}
       </div>
+      {hayBusqueda && encontrados.length === 0 ? (
+        <div className="bg-white rounded-xl border border-slate-200 p-6 text-center text-xs text-slate-400 italic">
+          Ninguna prestación coincide con “{busqueda.trim()}”.
+        </div>
+      ) : (
       <div className="bg-white rounded-xl border border-slate-200 p-3" style={{ height: Math.max(220, ordenados.length * 26 + 40) }}>
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={ordenados} layout="vertical" margin={{ top: 4, right: 48, left: 4, bottom: 4 }} barCategoryGap={4}>
@@ -2389,6 +2439,7 @@ function GraficoHorasPorPrestacion({ datos, seleccion, setSeleccion }) {
           </BarChart>
         </ResponsiveContainer>
       </div>
+      )}
     </div>
   );
 }
@@ -3713,7 +3764,7 @@ function ResumenAgendaTab({ profesionales: profesionalesTodos, bloques: bloquesT
   const [seleccion, setSeleccion] = useState([]); // [{ proceso, actividad }] — se pueden combinar varias prestaciones
   const [seleccionProfMapa, setSeleccionProfMapa] = useState([]); // claves de profesionales para armar el mapa de calor
   const [filtroBecados, setFiltroBecados] = useState('todos'); // 'todos' | 'sin' | 'solo'
-  const [filtroTipoProfesional, setFiltroTipoProfesional] = useState('todos');
+  const [filtroTiposProfesional, setFiltroTiposProfesional] = useState([]); // [] = todos los tipos
   const [filtroProfesional, setFiltroProfesional] = useState('todos');
   const [verHorasEfectivas, setVerHorasEfectivas] = useState(false);
   const [capacidadPabellon, setCapacidadPabellon] = useState(null); // { cargado, grid } | null
@@ -3763,12 +3814,12 @@ function ResumenAgendaTab({ profesionales: profesionalesTodos, bloques: bloquesT
   const tiposProfesional = Array.from(new Set(profesionalesTodos.map((p) => p.tipo || 'Sin tipo'))).sort();
   const profesionales = profesionalesTodos.filter((p) => {
     if (filtroBecados !== 'todos' && (filtroBecados === 'solo' ? !p.nivelFormacion : p.nivelFormacion)) return false;
-    if (filtroTipoProfesional !== 'todos' && (p.tipo || 'Sin tipo') !== filtroTipoProfesional) return false;
+    if (filtroTiposProfesional.length > 0 && !filtroTiposProfesional.includes(p.tipo || 'Sin tipo')) return false;
     if (filtroProfesional !== 'todos' && p.id !== filtroProfesional) return false;
     return true;
   });
   const idsFiltrados = new Set(profesionales.map((p) => p.id));
-  const sinFiltrosActivos = filtroBecados === 'todos' && filtroTipoProfesional === 'todos' && filtroProfesional === 'todos';
+  const sinFiltrosActivos = filtroBecados === 'todos' && filtroTiposProfesional.length === 0 && filtroProfesional === 'todos';
   const bloques = sinFiltrosActivos
     ? bloquesTodos
     : bloquesTodos.filter((b) => idsFiltrados.has(b.profesionalId));
@@ -3868,16 +3919,13 @@ function ResumenAgendaTab({ profesionales: profesionalesTodos, bloques: bloquesT
             </>
           )}
           {tiposProfesional.length > 1 && (
-            <select
-              value={filtroTipoProfesional}
-              onChange={(e) => setFiltroTipoProfesional(e.target.value)}
-              className="text-xs rounded-lg border border-slate-300 px-2.5 py-1.5 bg-white"
-            >
-              <option value="todos">Todos los tipos de profesional</option>
-              {tiposProfesional.map((t) => (
-                <option key={t} value={t}>{t}</option>
-              ))}
-            </select>
+            <FiltroMultiServicio
+              servicios={tiposProfesional}
+              seleccionados={filtroTiposProfesional}
+              onCambiar={setFiltroTiposProfesional}
+              textoTodos="Todos los tipos de profesional"
+              plural="tipos"
+            />
           )}
           {profesionalesTodos.length > 1 && (
             <select
@@ -5679,7 +5727,8 @@ function DocsTab() {
 // Dropdown con checkboxes para elegir varios servicios a la vez (en vez de un <select> de una
 // sola opción) — se usa en el resumen general para poder combinar, por ejemplo, todas las
 // subespecialidades de un jefe que tiene más de un servicio a cargo.
-function FiltroMultiServicio({ servicios, seleccionados, onCambiar }) {
+// Selector múltiple genérico (servicios por defecto; también tipos de profesional, etc.).
+function FiltroMultiServicio({ servicios, seleccionados, onCambiar, textoTodos = 'Todos los servicios', plural = 'servicios' }) {
   const [abierto, setAbierto] = useState(false);
   const ref = useRef(null);
   useEffect(() => {
@@ -5691,10 +5740,10 @@ function FiltroMultiServicio({ servicios, seleccionados, onCambiar }) {
   }, []);
   const etiqueta =
     seleccionados.length === 0
-      ? 'Todos los servicios'
+      ? textoTodos
       : seleccionados.length === 1
         ? seleccionados[0]
-        : `${seleccionados.length} servicios seleccionados`;
+        : `${seleccionados.length} ${plural} seleccionados`;
   function toggle(s) {
     onCambiar(seleccionados.includes(s) ? seleccionados.filter((x) => x !== s) : [...seleccionados, s]);
   }
@@ -5732,7 +5781,7 @@ function ResumenDashboardTab({ agendas }) {
   const [filtroMes, setFiltroMes] = useState('todos');
   const [filtroEstado, setFiltroEstado] = useState('todos');
   const [filtroBecados, setFiltroBecados] = useState('todos'); // 'todos' | 'sin' | 'solo'
-  const [filtroTipoProfesional, setFiltroTipoProfesional] = useState('todos');
+  const [filtroTiposProfesional, setFiltroTiposProfesional] = useState([]); // [] = todos los tipos
   const [filtroProfesional, setFiltroProfesional] = useState('todos');
   const [seleccion, setSeleccion] = useState([]); // [{ proceso, actividad }] — se pueden combinar varias prestaciones
   const [seleccionProfMapa, setSeleccionProfMapa] = useState([]); // claves de profesionales para armar el mapa de calor
@@ -5822,14 +5871,11 @@ function ResumenDashboardTab({ agendas }) {
         const esBecado = becadoKeys.has(key);
         if (filtroBecados === 'solo' ? !esBecado : esBecado) return false;
       }
-      if (filtroTipoProfesional !== 'todos') {
-        const tipo = tipoPorProfesional.get(key);
-        if (tipo !== filtroTipoProfesional) return false;
-      }
+      if (filtroTiposProfesional.length > 0 && !filtroTiposProfesional.includes(tipoPorProfesional.get(key))) return false;
       if (filtroProfesional !== 'todos' && key !== filtroProfesional) return false;
       return true;
     });
-  }, [todosBloquesCompleto, becadoKeys, filtroBecados, tipoPorProfesional, filtroTipoProfesional, filtroProfesional]);
+  }, [todosBloquesCompleto, becadoKeys, filtroBecados, tipoPorProfesional, filtroTiposProfesional, filtroProfesional]);
 
   const totalHoras = useMemo(() => todosBloques.filter((b) => !b.esTurno).reduce((s, b) => s + b.duracionMin / 60, 0), [todosBloques]);
 
@@ -5891,21 +5937,22 @@ function ResumenDashboardTab({ agendas }) {
             <option key={e2} value={e2}>{ESTADOS[e2].label}</option>
           ))}
         </select>
-        <select value={filtroTipoProfesional} onChange={(e) => setFiltroTipoProfesional(e.target.value)} className="text-xs rounded-lg border border-slate-300 px-2.5 py-1.5 bg-white">
-          <option value="todos">Todos los tipos de profesional</option>
-          {tiposProfesional.map((t) => (
-            <option key={t} value={t}>{t}</option>
-          ))}
-        </select>
+        <FiltroMultiServicio
+          servicios={tiposProfesional}
+          seleccionados={filtroTiposProfesional.filter((t) => tiposProfesional.includes(t))}
+          onCambiar={setFiltroTiposProfesional}
+          textoTodos="Todos los tipos de profesional"
+          plural="tipos"
+        />
         <select value={filtroProfesional} onChange={(e) => setFiltroProfesional(e.target.value)} className="text-xs rounded-lg border border-slate-300 px-2.5 py-1.5 bg-white">
           <option value="todos">Todos los profesionales</option>
           {profesionalesOpciones.map((p) => (
             <option key={p.key} value={p.key}>{p.nombre} — {p.servicio}</option>
           ))}
         </select>
-        {(filtrosServicio.length > 0 || filtroMes !== 'todos' || filtroEstado !== 'todos' || filtroTipoProfesional !== 'todos' || filtroProfesional !== 'todos') && (
+        {(filtrosServicio.length > 0 || filtroMes !== 'todos' || filtroEstado !== 'todos' || filtroTiposProfesional.length > 0 || filtroProfesional !== 'todos') && (
           <button
-            onClick={() => { setFiltrosServicio([]); setFiltroMes('todos'); setFiltroEstado('todos'); setFiltroTipoProfesional('todos'); setFiltroProfesional('todos'); }}
+            onClick={() => { setFiltrosServicio([]); setFiltroMes('todos'); setFiltroEstado('todos'); setFiltroTiposProfesional([]); setFiltroProfesional('todos'); }}
             className="text-xs text-slate-400 hover:text-slate-600 underline px-1"
           >
             Limpiar filtros
