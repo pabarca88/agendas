@@ -30,8 +30,12 @@ if (!CARPETA || !fs.existsSync(CARPETA)) {
   process.exit(1);
 }
 
-const PERIODO = 2027;
-const VIGENCIA = { desde: '2027-01-01', hasta: '2027-12-31', label: 'Enero - Diciembre 2027' };
+// --periodo 2026 carga en el periodo vigente un servicio que nunca tuvo agenda (con la misma
+// vigencia agosto-diciembre del resto de las agendas 2026); por defecto, 2027.
+const PERIODO = args.includes('--periodo') ? Number(args[args.indexOf('--periodo') + 1]) : 2027;
+const VIGENCIA = PERIODO === 2026
+  ? { desde: '2026-08-01', hasta: '2026-12-31', label: 'Agosto - Diciembre 2026' }
+  : { desde: `${PERIODO}-01-01`, hasta: `${PERIODO}-12-31`, label: `Enero - Diciembre ${PERIODO}` };
 const MEDICO = 'Médico(a) Cirujano(a)';
 const ENFERMERO = 'Enfermero(a)';
 
@@ -63,6 +67,26 @@ const ARCHIVOS = [
     profesion: () => MEDICO,
     especialidad: () => null,
   },
+  {
+    archivo: 'Cirugia Adulto/AGENDA 12.0 CIRUGIA ADULTO.xlsx',
+    destino: () => 'Cirugía Adulto',
+    profesion: () => MEDICO,
+    especialidad: () => null,
+    // Mismo nombre de catálogo que usa cirugiaadulto-2026 para estos procedimientos.
+    renombrar: (texto) => ({
+      'PROCEDIMIENTO: GASTRODUODENOSCOPIA (EDA)': 'Gastroduodenoscopía (incluye esofagoscopía)',
+      'PROCEDIMIENTO: COLONOSCOPIA': 'Colonoscopía larga (incluye sigmoidoscopía y ....)',
+    })[normalizeText(texto).replace(/\s+/g, ' ')],
+  },
+  // Cirugía Infantil = Cirugía Pediátrica. Sin agenda 2026 en la plataforma: se carga con
+  // --periodo 2026 desde "Programación 2026\Agendas Especialidades 2026" (versión de sept. 2026).
+  {
+    archivo: 'Cirugía Infantil/Cirugia Pediatrica 2026.xlsx',
+    destino: () => 'Cirugía Pediátrica',
+    servicioNuevo: { specialtyCatalog: 'CIRUGÍA PEDIÁTRICA', base: 'cirugiapediatrica' },
+    profesion: () => MEDICO,
+    especialidad: () => null,
+  },
   // CESAM Centro: 4 planillas (médica/profesionales × adulto/infantoadolescente) en una sola agenda
   // por dispositivo, igual que cesamcentro-2026. La hoja no trae la profesión de los no médicos:
   // se toma de PROFESION_CESAM_CENTRO (agenda 2026 + confirmación del usuario para los nuevos).
@@ -78,7 +102,56 @@ const ARCHIVOS = [
     especialidad: () => (infanto ? 'PSIQUIATRÍA PEDIÁTRICA Y DE LA ADOLESCENCIA' : null),
     renombrar: RENOMBRAR_CESAM,
   })),
+  // CESAM Las Compañías: la hoja trae la profesión en "especialidad". Como en cesamcias-2026, solo
+  // profesionales: PROGRAMACION TENS.xlsx y la trabajadora comunitaria quedan fuera.
+  ...[
+    ['PROGRAMACION MEDICA 2027.xlsx', true],
+    ['2027 PROG PROFESIONALES.xlsx', false],
+  ].map(([archivo, medica]) => ({
+    archivo: `Salud Mental/Cesam Las compañías/${archivo}`,
+    destino: () => 'Salud Mental CESAM Las Compañías',
+    profesion: (pr) => (medica ? MEDICO : profesionDesdeEspecialidad(pr.especialidad)),
+    especialidad: (pr) => (medica && /PEDIATRICA/.test(normalizeText(pr.especialidad)) ? 'PSIQUIATRÍA PEDIÁTRICA Y DE LA ADOLESCENCIA' : null),
+    excluir: (pr) => /COMUNITARI/.test(normalizeText(pr.especialidad)),
+    renombrar: RENOMBRAR_CESAM_LC,
+  })),
 ];
+
+// Las Compañías: textos que no existen para esa profesión. `R(...)` = criterio (se marca ⚠ REVISAR).
+// Médicos: ingreso → mismo criterio que cesamcias-2026; control SM → control de especialidad.
+const R = (a) => ({ actividad: a, revisar: true });
+function RENOMBRAR_CESAM_LC(texto, profesion) {
+  const t = normalizeText(texto).replace(/\s+/g, ' ');
+  const med = profesion === MEDICO;
+  const reglas = med ? {
+    'CONSULTA INGRESO EQUIPO DE SALUD MENTAL': R('Consulta Ingreso Hospital de Día y UHCIP (SM)'),
+    'CONSULTA CONTROL PRESENCIAL (SM)': 'Consulta Control de especialidad Presencial',
+    'CONSULTA CONTROL SALUD MENTAL': 'Consulta Control de especialidad Presencial',
+    'VISITA INTEGRAL DE SALUD MENTAL': 'Visita Integral de Salud Mental (SM)',
+    'DERIVACION ASISTIDA SM': R('Gestión de Casos'),
+    'GESTION TERAPEUTICA': R('Gestión de Casos'),
+    'ATENCION DE ENLACE O INTERCONSULTA A SALA': R('Interconsulta'),
+  } : {
+    'VISITA INTEGRAL DE SALUD MENTAL': 'Visita Integral de Salud Mental (SM)',
+    'CONSULTA ABREVIADA': 'Consulta Abreviada no Médica',
+    'CONSULTA ABREVIADA NO MEDICA': profesion === 'Terapeuta Ocupacional' ? R('Consulta Control  Presencial (SM)')
+      : profesion === 'Psicopedagogo(a)' ? R('Consulta Control Salud Mental') : undefined,
+    'GESTION TERAPEUTICA': profesion === ENFERMERO || profesion === 'Psicopedagogo(a)' ? R('Gestión de Casos SM') : undefined,
+    'TELEMEDICINA: TELECONSULTA CONTROL SALUD MENTAL': profesion === ENFERMERO ? 'Telemedicina: Teleconsulta Control' : 'Teleconsulta Control Salud Mental',
+    'TELECONSULTA CONTROL SALUD MENTAL': profesion === ENFERMERO ? 'Telemedicina: Teleconsulta Control' : undefined,
+  };
+  return reglas[t] ?? RENOMBRAR_CESAM(texto, profesion);
+}
+
+function profesionDesdeEspecialidad(esp) {
+  const t = normalizeText(esp);
+  if (/TERAPEUTA OCUPACIONAL/.test(t)) return 'Terapeuta Ocupacional';
+  if (/TRABAJADOR SOCIAL|ASISTENTE/.test(t)) return 'Asistente Social';
+  if (/PSICOPEDAGOG/.test(t)) return 'Psicopedagogo(a)';
+  if (/PSICOLOG/.test(t)) return 'Psicólogo(a) Clínica';
+  if (/ENFERMER/.test(t)) return ENFERMERO;
+  return null;
+}
 
 // CESAM: textos de planilla → actividad del catálogo, con el mismo criterio de cesamcentro-2026.
 // Se aplica ANTES de buscar en el catálogo (aunque el texto exista tal cual, ej. Visita Domiciliaria).
@@ -217,14 +290,17 @@ const rendimiento = (cupos, min) => (!cupos || !min ? 0 : Math.round((cupos / (m
 
 // ---- 1. Leer planillas y agrupar profesionales por servicio destino ----
 const porServicio = new Map(); // servicio -> [{ pr, profesion, especialidad }]
+const serviciosNuevos = new Map(); // servicio -> { specialtyCatalog, base } (se crea si no existe)
 const omitidas = [];
 for (const cfg of ARCHIVOS.filter((c) => !SOLO || c.archivo.toLowerCase().includes(SOLO.toLowerCase()))) {
   const parsed = parseAgendaWorkbook(fs.readFileSync(path.join(CARPETA, cfg.archivo)));
   for (const o of parsed.omitidas) if (!/^\d+$/.test(o.sheet.trim()) && !/referencia/.test(o.motivo)) omitidas.push(`${cfg.archivo} › ${o.sheet}: ${o.motivo}`);
   for (const pr of parsed.profesionales) {
+    if (cfg.excluir?.(pr)) { omitidas.push(`${cfg.archivo} › ${pr.sheet}: excluida (no es profesional programable)`); continue; }
     const servicio = cfg.destino(pr);
     if (!porServicio.has(servicio)) porServicio.set(servicio, []);
     porServicio.get(servicio).push({ pr, profesion: cfg.profesion(pr), especialidad: cfg.especialidad(pr), archivo: cfg.archivo, renombrar: cfg.renombrar });
+    if (cfg.servicioNuevo) serviciosNuevos.set(servicio, cfg.servicioNuevo);
   }
 }
 
@@ -234,10 +310,14 @@ const usadas = new Map(); // "origen → destino" -> { n, revisar, servicios }
 const errores = [];
 const plan = [];
 for (const [servicioNombre, profs] of porServicio) {
-  const servicio = await retry(() => prisma.service.findUnique({ where: { name: servicioNombre } }), 'servicio');
+  const nuevo = serviciosNuevos.get(servicioNombre);
+  let servicio = await retry(() => prisma.service.findUnique({ where: { name: servicioNombre } }), 'servicio');
+  if (!servicio && nuevo) servicio = { id: null, name: servicioNombre, specialtyCatalog: nuevo.specialtyCatalog, chiefName: null, crear: true };
   if (!servicio) { errores.push(`No existe el servicio "${servicioNombre}"`); continue; }
-  const agenda2026 = await retry(() => prisma.agenda.findFirst({ where: { serviceId: servicio.id, planningPeriod: 2026 }, orderBy: { updatedAt: 'desc' } }), 'agenda 2026');
-  const base = (agenda2026?.externalId || servicioNombre).replace(/-20\d\d$/, '');
+  const agenda2026 = servicio.id && PERIODO !== 2026
+    ? await retry(() => prisma.agenda.findFirst({ where: { serviceId: servicio.id, planningPeriod: 2026 }, orderBy: { updatedAt: 'desc' } }), 'agenda 2026')
+    : null;
+  const base = (agenda2026?.externalId || nuevo?.base || servicioNombre).replace(/-20\d\d$/, '');
   const externalId = `${base}-${PERIODO}`;
   const existe = await retry(() => prisma.agenda.findUnique({ where: { externalId }, include: { _count: { select: { audits: true } } } }), 'existe');
   if (existe && !REEMPLAZAR) { errores.push(`Ya existe la agenda ${externalId} — no se duplica (usa --reemplazar para recrearla).`); continue; }
@@ -255,12 +335,13 @@ for (const [servicioNombre, profs] of porServicio) {
     };
     const bloques = [];
     for (const b of pr.bloques) {
-      const renombre = typeof renombrar === 'function' ? renombrar(b.actividad, profesion) : undefined;
+      const rn = typeof renombrar === 'function' ? renombrar(b.actividad, profesion) : undefined;
+      const renombre = typeof rn === 'object' && rn ? rn.actividad : rn;
       let cat = buscar(renombre || b.actividad);
       let eq = null;
       if (renombre && cat) {
         const key = `${b.actividad}  →  ${cat.process}: ${cat.activity}`;
-        const u = usadas.get(key) || { n: 0, revisar: /VISITA DOMICILIARIA/.test(normalizeText(b.actividad)), servicios: new Set() };
+        const u = usadas.get(key) || { n: 0, revisar: !!rn?.revisar || /VISITA DOMICILIARIA/.test(normalizeText(b.actividad)), servicios: new Set() };
         u.n++; u.servicios.add(servicioNombre); usadas.set(key, u);
       }
       if (!cat) {
@@ -319,6 +400,10 @@ const fecha = new Date().toLocaleString('es-CL', { day: '2-digit', month: '2-dig
 await retry(() => prisma.$transaction(async (tx) => {
   for (const p of plan) {
     if (p.reemplazaId) await tx.agenda.delete({ where: { id: p.reemplazaId } });
+    if (p.servicio.crear) {
+      p.servicio = await tx.service.create({ data: { name: p.servicio.name, specialtyCatalog: p.servicio.specialtyCatalog } });
+      console.log(`  ✔ servicio "${p.servicio.name}" creado`);
+    }
     const todos = p.profesionales.flatMap((x) => x.bloques);
     const { horas, dist } = horasYDistribucion(todos);
     const agenda = await tx.agenda.create({
@@ -371,5 +456,5 @@ await retry(() => prisma.$transaction(async (tx) => {
     console.log(`  ✔ ${p.externalId} creada`);
   }
 }, { maxWait: 30000, timeout: 180000 }), 'transacción');
-console.log('\nAPLICADO: agendas 2027 guardadas.');
+console.log(`\nAPLICADO: agendas ${PERIODO} guardadas.`);
 await prisma.$disconnect();

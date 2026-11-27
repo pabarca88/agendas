@@ -268,6 +268,29 @@ export async function uploadHrDotacion(file) {
   return response.json();
 }
 
+// Descarga el Excel del resumen de programación en formato ministerial.
+export async function downloadResumenMinisterial({ periodo, servicios }) {
+  const token = getAuthToken();
+  const query = buildQuery({ periodo, servicios: servicios?.length ? servicios.join('|') : '' });
+  const response = await fetch(`${API_BASE}/reports/resumen-ministerial${query}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || `Request failed: ${response.status}`);
+  }
+  const disposition = response.headers.get('Content-Disposition') || '';
+  const nombre = /filename="([^"]+)"/.exec(disposition)?.[1] || `Resumen_programacion_${periodo}.xlsx`;
+  const url = URL.createObjectURL(await response.blob());
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = nombre;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 export async function fetchHrSummary(params) {
   return request(`/hr/summary${buildQuery(params)}`);
 }

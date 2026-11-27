@@ -56,6 +56,9 @@ export function parseDotacionWorkbook(buffer) {
   const col = {
     rut: findColumnIndex(headerRow, ['Rut']),
     dv: findColumnIndex(headerRow, ['Dv']),
+    // Exacto: "Correl. Informe", "Correl. Planta" y "Corr. Contrato del Reemplazado" son otra cosa.
+    correlativo: headerRow.findIndex((h) => normalizeText(h) === 'CORRELATIVO'),
+    correlativo: headerRow.findIndex((h) => normalizeText(h) === 'CORRELATIVO'),
     nombre: findColumnIndex(headerRow, ['Nombre Funcionario']),
     planta: findColumnIndex(headerRow, ['Descripcion Planta']),
     calidad: findColumnIndex(headerRow, ['Calidad Juridica']),
@@ -89,6 +92,8 @@ export function parseDotacionWorkbook(buffer) {
     contracts.push({
       rut: normalizeRut(rutRaw),
       dv: col.dv !== -1 ? String(row[col.dv] ?? '').trim() : '',
+      correlativo: col.correlativo !== -1 && row[col.correlativo] != null ? String(row[col.correlativo]).trim() : null,
+      correlativo: col.correlativo !== -1 && row[col.correlativo] != null ? String(row[col.correlativo]).trim() : null,
       nombreFuncionario: String(nombre).trim(),
       planta: col.planta !== -1 ? normalizeText(row[col.planta]) : '',
       calidadJuridica: col.calidad !== -1 ? String(row[col.calidad] ?? '').trim() : '',

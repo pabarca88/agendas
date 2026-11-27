@@ -85,6 +85,7 @@ export function serializeAgenda(record) {
     jefe: record.chiefName,
     mes: record.monthLabel,
     periodo: record.planningPeriod,
+    copiaDe: record.copiedFrom ?? null,
     vigenciaDesde: record.validFrom ? record.validFrom.toISOString().slice(0, 10) : null,
     vigenciaHasta: record.validTo ? record.validTo.toISOString().slice(0, 10) : null,
     estado: record.status,

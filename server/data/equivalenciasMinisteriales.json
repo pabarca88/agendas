@@ -1,0 +1,16 @@
+{
+  "_nota": "Actividades del catálogo que no existen tal cual en la tabla oficial de códigos. Criterio confirmado por DDI el 2026-11-24. 'porServicio' usa el nombre del servicio de la agenda; 'defecto' aplica al resto.",
+  "medicas": {
+    "Interconsulta": { "defecto": 303, "oficial": "Interconsulta entre médicos especialistas" },
+    "Atención en sala": {
+      "porServicio": {
+        "Cardiología": { "id": 387, "oficial": "Atención en sala cama UCI Adulto" },
+        "Neonatología": { "id": 385, "oficial": "Atención en sala cama UCI Neo" },
+        "Cirugía Pediátrica": { "id": 379, "oficial": "Atención en sala cama básica pediátrica" }
+      },
+      "defecto": 389,
+      "oficial": "Atención en sala cama básica Adulto"
+    }
+  },
+  "noMedicas": {}
+}

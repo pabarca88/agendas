@@ -54,7 +54,10 @@ model Agenda {
   // agenda vigente y la del próximo periodo de un mismo servicio a la vez sin que se sumen en
   // tableros, cruce RRHH ni pabellón — todo se filtra por periodo.
   planningPeriod  Int                @default(2026)
-  validFrom       DateTime?
+  // externalId de la agenda de otro periodo de la que esta es copia provisional (ej. la 2027
+  // copiada de la 2026 mientras llega la planilla nueva). Null = programación propia del periodo.
+  copiedFrom      String?
+  validFrom      DateTime?
   validTo         DateTime?
   status          String
   version         Int                @default(1)
@@ -325,6 +328,8 @@ model HrContract {
   id                   String    @id @default(cuid())
   rut                  String
   dv                   String
+  // N° de contrato del funcionario en el reporte de Dotación (un mismo RUT puede tener varios).
+  correlativo          String?
   nombreFuncionario    String
   planta               String
   calidadJuridica      String

@@ -22,6 +22,7 @@ import {
   writeAgendaGraph,
 } from './lib/agendas.js';
 import { normalizeRut, normalizeText, parseDotacionWorkbook } from './lib/hr.js';
+import { construirResumenMinisterial, PLANTAS_PROFESIONALES, tokensNombre, coincideNombre } from './lib/resumenMinisterial.js';
 import { parsePabellonWorkbook, resolveServiciosDesdeTexto } from './lib/pabellon.js';
 import { applyAgendaImport, parseAgendaWorkbook, validateAgendaImport } from './lib/agendaImport.js';
 
@@ -903,33 +904,90 @@ async function resolvePeriodo(req) {
   return agg._max.planningPeriod ?? new Date().getFullYear();
 }
 
+// Resumen de programación en formato ministerial (Excel con hojas Médicos / No médicos /
+// Odontólogos). ?periodo=2027&servicios=A|B (vacío = todos los visibles). Un jefe de servicio solo
+// obtiene sus propios servicios.
+app.get('/api/reports/resumen-ministerial', async (req, res) => {
+  if (!requireAuth(req, res)) return;
+  const periodo = await resolvePeriodo(req);
+  const pedidos = typeof req.query.servicios === 'string' && req.query.servicios.trim()
+    ? req.query.servicios.split('|').map((s) => s.trim()).filter(Boolean)
+    : null;
+  const where = { planningPeriod: periodo };
+  if (req.authUser.role === 'jefe_servicio') {
+    where.serviceId = { in: req.authUser.serviceIds || [] };
+  } else if (!HR_ROLES.includes(req.authUser.role)) {
+    res.status(403).json({ error: 'No autorizado para esta accion.' });
+    return;
+  }
+  if (pedidos) where.serviceName = { in: pedidos };
+
+  const [agendas, contratos, catalogo] = await Promise.all([
+    prisma.agenda.findMany({
+      where,
+      select: {
+        serviceName: true,
+        serviceSpecialty: true,
+        professionals: { select: { id: true, name: true, type: true, rut: true, specialtyCatalog: true } },
+        blocks: {
+          select: {
+            professionalId: true, process: true, activity: true, durationMinutes: true, isShift: true,
+            hasPerformance: true, performance: true, isClinical: true,
+            catalogActivity: { select: { specialty: true, activity: true, rawType: true, rawPerformanceFlag: true, isClinical: true, hasPerformance: true } },
+          },
+        },
+      },
+    }),
+    prisma.hrContract.findMany(),
+    prisma.catalogActivity.findMany({
+      select: { process: true, profession: true, specialty: true, activity: true, rawType: true, rawPerformanceFlag: true, isClinical: true, hasPerformance: true },
+    }),
+  ]);
+
+  const { buffer } = construirResumenMinisterial({ agendas, contratos, catalogo });
+  const sufijo = pedidos && pedidos.length === 1 ? `_${normalizeText(pedidos[0]).replace(/[^A-Z0-9]+/g, '_')}` : '';
+  const nombre = `Resumen_programacion_${periodo}${sufijo}.xlsx`;
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${nombre}"`);
+  res.send(buffer);
+});
+
 app.get('/api/hr/summary', async (req, res) => {
   if (!requireRoles(req, res, HR_ROLES)) return;
   const periodo = await resolvePeriodo(req);
 
-  const planta = typeof req.query.planta === 'string' && req.query.planta.trim()
+  // Lineamiento: se programa a todos los profesionales y solo a ellos, así que la nómina se limita
+  // a las plantas profesionales. TODAS = las cuatro juntas.
+  const plantaPedida = typeof req.query.planta === 'string' && req.query.planta.trim()
     ? req.query.planta.trim().toUpperCase()
-    : 'MEDICOS';
+    : 'TODAS';
+  const planta = plantaPedida === 'TODAS' || PLANTAS_PROFESIONALES.includes(plantaPedida) ? plantaPedida : 'TODAS';
+  const plantas = planta === 'TODAS' ? PLANTAS_PROFESIONALES : [planta];
 
   const [contracts, lastImport] = await Promise.all([
-    prisma.hrContract.findMany({ where: { planta } }),
+    prisma.hrContract.findMany({ where: { planta: { in: plantas } } }),
     prisma.hrContract.findFirst({ orderBy: { createdAt: 'desc' }, select: { createdAt: true } }),
   ]);
 
   const now = new Date();
   const porRut = new Map(); // rut -> { nombre, cargo, unidad, horasContratadas, tieneTurno, dv }
   for (const c of contracts) {
+    // Solo contratos vigentes: quien ya no tiene contrato no debe aparecer como pendiente.
+    const vigente = (!c.fechaInicioContrato || c.fechaInicioContrato <= now) && (!c.fechaTerminoContrato || c.fechaTerminoContrato >= now);
+    if (!vigente) continue;
     if (!porRut.has(c.rut)) {
       porRut.set(c.rut, {
-        rut: c.rut, dv: c.dv, nombre: c.nombreFuncionario, cargo: c.cargo,
-        unidad: c.unidadDescripcion, horasContratadas: 0, tieneTurno: false,
+        rut: c.rut, dv: c.dv, nombre: c.nombreFuncionario, cargos: new Set(), unidades: new Set(),
+        plantas: new Set(), correlativos: new Set(), horasContratadas: 0, tieneTurno: false,
       });
     }
     const acc = porRut.get(c.rut);
-    if (c.ley === 'LEY 15.076') acc.tieneTurno = true;
-    if (c.ley !== 'LEY 19.664') continue;
-    const vigente = (!c.fechaInicioContrato || c.fechaInicioContrato <= now) && (!c.fechaTerminoContrato || c.fechaTerminoContrato >= now);
-    if (!vigente) continue;
+    acc.plantas.add(c.planta);
+    if (c.cargo) acc.cargos.add(c.cargo);
+    if (c.unidadDescripcion) acc.unidades.add(c.unidadDescripcion);
+    if (c.correlativo) acc.correlativos.add(c.correlativo);
+    // Ley 15.076 = turno (Art. 15): no es jornada programable en agenda.
+    if (c.ley === 'LEY 15.076') { acc.tieneTurno = true; continue; }
     acc.horasContratadas += c.numeroHoras || 0;
   }
 
@@ -945,19 +1003,17 @@ app.get('/api/hr/summary', async (req, res) => {
     },
   });
 
-  const porNombreProfesional = new Map();
-  for (const p of professionals) {
-    const key = normalizeText(p.name);
-    if (!porNombreProfesional.has(key)) porNombreProfesional.set(key, []);
-    porNombreProfesional.get(key).push(p);
-  }
+  // Cruce por nombre solo para quienes aún no tienen RUT en la agenda: Dotación usa
+  // "APELLIDOS NOMBRES" y la agenda suele usar "Nombre Apellido", así que se compara por palabras.
+  const sinRut = professionals.filter((p) => !p.rut).map((p) => ({ p, tokens: tokensNombre(p.name) }));
 
   const resultado = [];
   for (const acc of porRut.values()) {
     let matches = professionals.filter((p) => p.rut && p.rut === acc.rut);
     let coincidenciaPorNombre = false;
     if (matches.length === 0) {
-      matches = porNombreProfesional.get(normalizeText(acc.nombre)) || [];
+      const tokensDot = tokensNombre(acc.nombre);
+      matches = sinRut.filter((x) => coincideNombre(x.tokens, tokensDot)).map((x) => x.p);
       coincidenciaPorNombre = matches.length > 0;
     }
     const horasProgramadas = matches.reduce(
@@ -969,8 +1025,12 @@ app.get('/api/hr/summary', async (req, res) => {
       rut: acc.rut,
       dv: acc.dv,
       nombre: acc.nombre,
-      cargo: acc.cargo,
-      unidad: acc.unidad,
+      cargo: [...acc.cargos].join(' / '),
+      unidad: [...acc.unidades].join(' / '),
+      cargos: [...acc.cargos].sort(),
+      unidades: [...acc.unidades].sort(),
+      planta: [...acc.plantas].join(' / '),
+      correlativos: [...acc.correlativos].sort(),
       tieneTurno: acc.tieneTurno,
       horasContratadas: Math.round(acc.horasContratadas * 10) / 10,
       horasProgramadas: Math.round(horasProgramadas * 10) / 10,
@@ -985,6 +1045,7 @@ app.get('/api/hr/summary', async (req, res) => {
 
   res.json({
     planta,
+    periodo,
     ultimaImportacion: lastImport?.createdAt ?? null,
     total: resultado.length,
     items: resultado,
